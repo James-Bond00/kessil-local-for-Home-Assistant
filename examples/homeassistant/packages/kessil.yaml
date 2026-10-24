@@ -1,0 +1,515 @@
+###############################################################################
+# kessil.yaml – Home Assistant package for kessil-local (unofficial)
+# https://github.com/James-Bond00/kessil-local-for-Home-Assistant
+#
+# Needs /config/shell/kessil.py (copy of kessil.py from the repository).
+# Replace 192.168.1.50 with the IP of YOUR dongle (8 times, search & replace).
+# Group 2 and program 1 are the defaults of kessil.py (--group / --pid).
+#
+# What you get:
+#   light.kessil                 on/off, brightness (manual mode), effects
+#   sensor.kessil_status         Off / Manual / Program / Effect (+ attributes)
+#   sliders                      INT, color, red, amber (manual mode)
+#   effect select, speed, time   storm, cloud, aurora
+#   script.kessil_resume_program back to the daily program
+#   daily program                shape from input_text.kessil_program_shape is
+#                                moved so that it ends at sunset + offset (or a
+#                                fixed time / starts at sunrise + offset);
+#                                written to the lamp every Sunday 04:00 and with
+#                                script.kessil_write_program. The lamp then runs
+#                                on its own.
+###############################################################################
+
+shell_command:
+  kessil_on: "python3 /config/shell/kessil.py --host 192.168.1.50 on"
+  kessil_off: "python3 /config/shell/kessil.py --host 192.168.1.50 off"
+  kessil_manual: "python3 /config/shell/kessil.py --host 192.168.1.50 manual {{ ui1 | int }} {{ ui2 | int }} {{ ui4 | int }} {{ ui5 | int }}"
+  kessil_effect: "python3 /config/shell/kessil.py --host 192.168.1.50 effect {{ effect }} --speed {{ speed }} --seconds {{ seconds | int }}"
+  kessil_effect_off: "python3 /config/shell/kessil.py --host 192.168.1.50 effect-off"
+  kessil_program: "python3 /config/shell/kessil.py --host 192.168.1.50 program {{ pid | int }}"
+  kessil_program_read: "python3 /config/shell/kessil.py --host 192.168.1.50 program-read"
+  kessil_program_write: "python3 /config/shell/kessil.py --host 192.168.1.50 program-write {{ points | regex_replace('[^0-9:,;]', '') }}"
+
+command_line:
+  - sensor:
+      name: "Kessil Status"
+      unique_id: kessil_status
+      command: "python3 /config/shell/kessil.py --host 192.168.1.50 status"
+      value_template: >-
+        {% if value_json.group is defined %}
+          {% set g = value_json.group %}
+          {% if g.eid != -1 %}Effect
+          {% elif g.pause == 1 %}Off
+          {% elif g.pid == -1 %}Manual
+          {% else %}Program
+          {% endif %}
+        {% else %}
+          unavailable
+        {% endif %}
+      json_attributes_path: "$.group"
+      json_attributes:
+        - pid
+        - eid
+        - pause
+        - UI
+        - name
+        - hasLamps
+      scan_interval: 60
+      command_timeout: 15
+
+input_number:
+  kessil_intensity:
+    name: "Kessil intensity (INT)"
+    min: 1
+    max: 100
+    step: 1
+    unit_of_measurement: "%"
+    icon: mdi:brightness-6
+  kessil_color:
+    name: "Kessil color (CLR)"
+    min: 0
+    max: 100
+    step: 1
+    unit_of_measurement: "%"
+    icon: mdi:palette
+  kessil_red:
+    name: "Kessil red"
+    min: 0
+    max: 100
+    step: 1
+    icon: mdi:alpha-r-circle
+  kessil_amber:
+    name: "Kessil amber"
+    min: 0
+    max: 100
+    step: 1
+    icon: mdi:alpha-a-circle
+  kessil_effect_minutes:
+    name: "Kessil effect duration"
+    min: 0.5
+    max: 5
+    step: 0.5
+    unit_of_measurement: "min"
+    icon: mdi:timer-outline
+  kessil_program_offset:
+    name: "Kessil program offset"
+    min: -240
+    max: 240
+    step: 5
+    unit_of_measurement: "min"
+    icon: mdi:arrow-left-right
+
+input_select:
+  kessil_effect:
+    name: "Kessil effect"
+    options:
+      - "None"
+      - Storm
+      - Cloud
+      - Aurora
+    icon: mdi:weather-lightning
+  kessil_effect_speed:
+    name: "Kessil effect speed"
+    options:
+      - slow
+      - medium
+      - fast
+    initial: medium
+    icon: mdi:speedometer
+  kessil_program_anchor:
+    name: "Kessil program anchor"
+    options:
+      - End at sunset
+      - Start at sunrise
+      - End at fixed time
+    icon: mdi:weather-sunset
+
+input_text:
+  kessil_program_shape:
+    # minutes after start:INT(0-255),CLR(0-255),RED(0-100),AMBER(0-100);...
+    # empty = the example shape below (10 h 10 min). Last point = off.
+    name: "Kessil program shape"
+    max: 255
+    icon: mdi:chart-bell-curve
+  kessil_program_written:
+    name: "Kessil program on the lamp"
+    max: 255
+    icon: mdi:upload
+  kessil_program_message:
+    name: "Kessil program message"
+    max: 255
+    icon: mdi:message-text
+
+input_datetime:
+  kessil_program_fixed_end:
+    name: "Kessil program fixed end"
+    has_date: false
+    has_time: true
+    initial: "18:00"
+  kessil_program_earliest_start:
+    name: "Kessil program earliest start"
+    has_date: false
+    has_time: true
+    initial: "06:00"
+  kessil_program_latest_start:
+    name: "Kessil program latest start"
+    has_date: false
+    has_time: true
+    initial: "10:00"
+
+input_boolean:
+  kessil_program_weekly:
+    name: "Kessil write program every Sunday"
+    icon: mdi:calendar-sync
+
+template:
+  - light:
+      - name: "Kessil"
+        unique_id: kessil_light
+        icon: mdi:fishbowl
+        state: >-
+          {{ state_attr('sensor.kessil_status', 'pause') | int(1) == 0
+             or state_attr('sensor.kessil_status', 'eid') | int(-1) != -1 }}
+        level: >-
+          {% set ui = state_attr('sensor.kessil_status', 'UI') %}
+          {% if state_attr('sensor.kessil_status', 'pid') | int(0) == -1 and ui is not none %}
+            {{ ui[0] | int(0) }}
+          {% else %}
+            None
+          {% endif %}
+        effect_list: "{{ ['None', 'Storm', 'Cloud', 'Aurora'] }}"
+        effect: >-
+          {% set e = state_attr('sensor.kessil_status', 'eid') | int(-1) %}
+          {% if e == -1 %}None
+          {% else %}{{ {0: 'Storm', 1: 'Cloud', 3: 'Aurora'}.get(e % 100, 'None') }}
+          {% endif %}
+        availability: "{{ states('sensor.kessil_status') not in ['unavailable', 'unknown'] }}"
+        turn_on:
+          - action: script.kessil_on
+        turn_off:
+          - action: script.kessil_off
+        set_level:
+          - action: script.kessil_set
+            data:
+              brightness: "{{ brightness }}"
+        set_effect:
+          - action: script.kessil_effect
+            data:
+              effect: "{{ effect }}"
+
+  - triggers:
+      - trigger: homeassistant
+        event: start
+      - trigger: time_pattern
+        minutes: /10
+      - trigger: state
+        entity_id:
+          - input_text.kessil_program_shape
+          - input_select.kessil_program_anchor
+          - input_number.kessil_program_offset
+          - input_datetime.kessil_program_fixed_end
+          - input_datetime.kessil_program_earliest_start
+          - input_datetime.kessil_program_latest_start
+    actions:
+      - variables:
+          points: >-
+            {% set example = '0:2,0,0,65;60:51,25,0,16;180:255,229,0,0;360:255,178,0,0;485:102,0,100,0;545:0,0,100,28;610:0,0,0,0' %}
+            {% set shape = states('input_text.kessil_program_shape') | replace(' ', '') %}
+            {% set shape = shape if shape is match('^[0-9]+:[0-9]+,[0-9]+,[0-9]+,[0-9]+(;[0-9]+:[0-9]+,[0-9]+,[0-9]+,[0-9]+)+$') else example %}
+            {% set parts = shape.split(';') %}
+            {% set length = parts[-1].split(':')[0] | int %}
+            {% set sunset = as_local(as_datetime(state_attr('sun.sun', 'next_setting'))) %}
+            {% set sunrise = as_local(as_datetime(state_attr('sun.sun', 'next_rising'))) %}
+            {% set offset = states('input_number.kessil_program_offset') | int(0) %}
+            {% set anchor = states('input_select.kessil_program_anchor') %}
+            {% set fe = states('input_datetime.kessil_program_fixed_end') %}
+            {% set fe_min = (fe[:2] | int(18)) * 60 + (fe[3:5] | int(0)) %}
+            {% if anchor == 'Start at sunrise' %}
+              {% set start = sunrise.hour * 60 + sunrise.minute + offset %}
+            {% elif anchor == 'End at fixed time' %}
+              {% set start = fe_min + offset - length %}
+            {% else %}
+              {% set start = sunset.hour * 60 + sunset.minute + offset - length %}
+            {% endif %}
+            {% set es = states('input_datetime.kessil_program_earliest_start') %}
+            {% set ls = states('input_datetime.kessil_program_latest_start') %}
+            {% set es_min = (es[:2] | int(6)) * 60 + (es[3:5] | int(0)) %}
+            {% set ls_min = (ls[:2] | int(10)) * 60 + (ls[3:5] | int(0)) %}
+            {% set start = [[start, es_min] | max, ls_min] | min %}
+            {% set start = [[start, 0] | max, 1439 - length] | min %}
+            {% set ns = namespace(l=[]) %}
+            {% for t in parts %}
+              {% set m, w = t.split(':') %}
+              {% set ns.l = ns.l + [((start + m | int) ~ ':' ~ w)] %}
+            {% endfor %}
+            {{ ns.l | join(';') }}
+          first: "{{ points.split(';')[0].split(':')[0] | int }}"
+          last: "{{ points.split(';')[-1].split(':')[0] | int }}"
+    sensor:
+      - name: "Kessil program plan"
+        unique_id: kessil_program_plan
+        icon: mdi:fishbowl-outline
+        state: "{{ '%02d:%02d' % (first // 60, first % 60) }}–{{ '%02d:%02d' % (last // 60, last % 60) }}"
+        attributes:
+          points: "{{ points }}"
+          start: "{{ '%02d:%02d' % (first // 60, first % 60) }}"
+          end: "{{ '%02d:%02d' % (last // 60, last % 60) }}"
+
+script:
+  kessil_on:
+    alias: "Kessil on"
+    icon: mdi:lightbulb-on
+    mode: queued
+    max: 5
+    sequence:
+      - action: shell_command.kessil_on
+        response_variable: answer
+      - delay: "00:00:01"
+      - action: homeassistant.update_entity
+        target:
+          entity_id: sensor.kessil_status
+
+  kessil_off:
+    alias: "Kessil off"
+    icon: mdi:lightbulb-off
+    mode: queued
+    max: 5
+    sequence:
+      - action: shell_command.kessil_off
+        response_variable: answer
+      - delay: "00:00:01"
+      - action: homeassistant.update_entity
+        target:
+          entity_id: sensor.kessil_status
+
+  kessil_set:
+    alias: "Kessil set manual values"
+    icon: mdi:fishbowl
+    mode: queued
+    max: 5
+    fields:
+      brightness:
+        description: "INT 0-255 (empty = value of the intensity slider)"
+        example: 200
+    sequence:
+      - variables:
+          h: >-
+            {% if brightness is defined %}
+              {{ brightness | int }}
+            {% else %}
+              {% set z = states('input_number.kessil_intensity') | float(100) %}
+              {{ (z * 2.55) | round(0) | int if z > 0 else 255 }}
+            {% endif %}
+      - if:
+          - condition: template
+            value_template: "{{ h | int == 0 }}"
+        then:
+          - action: script.kessil_off
+          - stop: "brightness 0 = off"
+      - action: input_number.set_value
+        target:
+          entity_id: input_number.kessil_intensity
+        data:
+          value: "{{ [((h | int) / 2.55) | round(0) | int, 1] | max }}"
+      - action: shell_command.kessil_manual
+        data:
+          ui1: "{{ h | int }}"
+          ui2: "{{ (states('input_number.kessil_color') | float(0) * 2.55) | round(0) | int }}"
+          ui4: "{{ states('input_number.kessil_red') | int(0) }}"
+          ui5: "{{ states('input_number.kessil_amber') | int(0) }}"
+        response_variable: answer
+      - delay: "00:00:01"
+      - action: homeassistant.update_entity
+        target:
+          entity_id: sensor.kessil_status
+
+  kessil_effect:
+    alias: "Kessil effect"
+    icon: mdi:weather-lightning
+    mode: queued
+    max: 5
+    fields:
+      effect:
+        description: "None, Storm, Cloud or Aurora"
+        example: "Storm"
+    sequence:
+      - if:
+          - condition: template
+            value_template: "{{ effect not in ['Storm', 'Cloud', 'Aurora'] }}"
+        then:
+          - action: shell_command.kessil_effect_off
+            response_variable: answer
+        else:
+          - action: shell_command.kessil_effect
+            data:
+              effect: "{{ effect | lower }}"
+              speed: "{{ states('input_select.kessil_effect_speed') if states('input_select.kessil_effect_speed') in ['slow', 'medium', 'fast'] else 'medium' }}"
+              seconds: "{{ (states('input_number.kessil_effect_minutes') | float(1) * 60) | int }}"
+            response_variable: answer
+      - delay: "00:00:01"
+      - action: homeassistant.update_entity
+        target:
+          entity_id: sensor.kessil_status
+
+  kessil_resume_program:
+    alias: "Kessil resume program"
+    icon: mdi:calendar-clock
+    mode: single
+    sequence:
+      - action: shell_command.kessil_program
+        data:
+          pid: 1
+        response_variable: answer
+      - delay: "00:00:01"
+      - action: homeassistant.update_entity
+        target:
+          entity_id: sensor.kessil_status
+
+  kessil_write_program:
+    alias: "Kessil write program"
+    description: "Writes the planned daily program (sensor.kessil_program_plan) to the lamp, activates it and verifies it by reading it back."
+    icon: mdi:upload
+    mode: single
+    sequence:
+      - action: homeassistant.update_entity
+        target:
+          entity_id: sensor.kessil_program_plan
+      - delay: "00:00:01"
+      - variables:
+          points: "{{ state_attr('sensor.kessil_program_plan', 'points') | default('') | regex_replace('[^0-9:,;]', '') }}"
+      - if:
+          - condition: template
+            value_template: "{{ points.split(';') | count < 2 }}"
+        then:
+          - action: input_text.set_value
+            target:
+              entity_id: input_text.kessil_program_message
+            data:
+              value: "{{ now().strftime('%Y-%m-%d %H:%M') }} error: no valid program planned"
+          - stop: "no valid program"
+      - action: shell_command.kessil_program_write
+        data:
+          points: "{{ points }}"
+        response_variable: answer
+        continue_on_error: true
+      - variables:
+          result: >-
+            {% set s = (answer.stdout | default('')) if answer is defined else '' %}
+            {{ s | from_json if s.startswith('{') else {'code': -1, 'msg': 'no answer'} }}
+      - if:
+          - condition: template
+            value_template: "{{ result.code | default(-1) == 0 }}"
+        then:
+          - action: input_text.set_value
+            target:
+              entity_id: input_text.kessil_program_written
+            data:
+              value: "{{ points[:255] }}"
+          - action: input_text.set_value
+            target:
+              entity_id: input_text.kessil_program_message
+            data:
+              value: "{{ now().strftime('%Y-%m-%d %H:%M') }} written and verified: {{ states('sensor.kessil_program_plan') }}"
+        else:
+          - action: input_text.set_value
+            target:
+              entity_id: input_text.kessil_program_message
+            data:
+              value: "{{ (now().strftime('%Y-%m-%d %H:%M') ~ ' error: ' ~ (result.msg | default('unknown')))[:255] }}"
+          - action: persistent_notification.create
+            data:
+              title: "Kessil"
+              message: "The daily program could not be written: {{ result.msg | default('unknown') }}. The lamp keeps its old program."
+      - delay: "00:00:02"
+      - action: homeassistant.update_entity
+        target:
+          entity_id: sensor.kessil_status
+
+automation:
+  - id: kessil_sliders
+    alias: "Kessil – apply sliders"
+    mode: restart
+    triggers:
+      - trigger: state
+        entity_id:
+          - input_number.kessil_intensity
+          - input_number.kessil_color
+          - input_number.kessil_red
+          - input_number.kessil_amber
+    conditions:
+      # only changes by hand, not when the script updates the intensity slider
+      - condition: template
+        value_template: "{{ trigger.to_state.context.parent_id is none }}"
+      - condition: state
+        entity_id: light.kessil
+        state: "on"
+    actions:
+      - delay: "00:00:01"
+      - action: script.kessil_set
+
+  - id: kessil_effect_settings
+    alias: "Kessil – apply effect speed/duration"
+    mode: restart
+    triggers:
+      - trigger: state
+        entity_id:
+          - input_select.kessil_effect_speed
+          - input_number.kessil_effect_minutes
+    conditions:
+      - condition: template
+        value_template: "{{ state_attr('light.kessil', 'effect') not in [none, 'None'] }}"
+    actions:
+      - delay: "00:00:01"
+      - action: script.kessil_effect
+        data:
+          effect: "{{ state_attr('light.kessil', 'effect') }}"
+
+  - id: kessil_effect_select
+    alias: "Kessil – apply effect selection"
+    mode: restart
+    triggers:
+      - trigger: state
+        entity_id: input_select.kessil_effect
+    conditions:
+      # only selections by a user, not when the select follows the lamp
+      - condition: template
+        value_template: "{{ trigger.to_state.context.parent_id is none and trigger.to_state.context.user_id is not none }}"
+    actions:
+      - action: script.kessil_effect
+        data:
+          effect: "{{ states('input_select.kessil_effect') }}"
+
+  - id: kessil_effect_follow
+    alias: "Kessil – effect selection follows the lamp"
+    mode: queued
+    triggers:
+      - trigger: state
+        entity_id: light.kessil
+        attribute: effect
+    conditions:
+      - condition: template
+        value_template: >-
+          {{ trigger.to_state.attributes.effect is not none
+             and trigger.to_state.attributes.effect != states('input_select.kessil_effect') }}
+    actions:
+      - action: input_select.select_option
+        target:
+          entity_id: input_select.kessil_effect
+        data:
+          option: "{{ trigger.to_state.attributes.effect }}"
+
+  - id: kessil_program_weekly
+    alias: "Kessil – write program every Sunday"
+    description: "Sunday 04:00 (after a daylight saving change) the program is planned again and written to the lamp."
+    mode: single
+    triggers:
+      - trigger: time
+        at: "04:00:00"
+    conditions:
+      - condition: time
+        weekday: sun
+      - condition: state
+        entity_id: input_boolean.kessil_program_weekly
+        state: "on"
+    actions:
+      - action: script.kessil_write_program
