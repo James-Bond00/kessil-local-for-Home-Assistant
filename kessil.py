@@ -8,12 +8,20 @@ no cloud and no password. See docs/protocol.md for the details.
 Tested with: Kessil WiFi dongle (FW 1.5.13) and two A360X Tuna Sun
 (FW 1.3 and 1.5) in one group.
 
+The dongle handles only ONE connection at a time. kessil.py therefore
+  - takes a lock file, so several kessil.py calls (e.g. a status poll and a
+    command from Home Assistant) never talk to the dongle at the same time,
+  - retries a message up to 3 times if there is no answer,
+  - restores the previous state if an effect command does not arrive
+    (an effect first pauses the lamp; without this it would stay off).
+
 Host, port, group and program can be set by option or environment:
   --host  / KESSIL_HOST    IP of the dongle (required)
   --port  / KESSIL_PORT    default 8888
   --group / KESSIL_GROUP   group id (GID), default 2
   --pid   / KESSIL_PID     program id for program-read/-write, default 1
   --type  / KESSIL_TYPE    lamp type for program-read/-write, default 2 (Tuna Sun)
+  KESSIL_LOCK              lock file, default <temp dir>/kessil.lock
 
 Commands (output is always one line of JSON, exit code 0 = success):
   info                         device info (dtype 114)
@@ -22,9 +30,10 @@ Commands (output is always one line of JSON, exit code 0 = success):
   on                           back on with the stored values
   off                          off
   manual INT CLR RED AMBER     manual mode: INT/CLR 0-255, RED/AMBER 0-100
-  effect NAME [--speed S] [--seconds N]
-                               NAME: storm, cloud, aurora (or 0-9)
-                               S: fast, medium, slow; N: 30-300
+  effect NAME [--frequency F] [--seconds N]
+                               NAME: storm, cloud, rainbow, aurora,
+                                     moonlight-red, moonlight-blue (or 0-9)
+                               F: often, medium, rare; N: 30-300
   effect-off                   end the effect, back to the stored values
   program PID                  run program PID (-1 = no program)
   program-read                 read the daily program (dtype 106)
@@ -40,13 +49,47 @@ import json
 import os
 import socket
 import sys
+import tempfile
 import time
 
-TIMEOUT = 4.0
-EFFECTS = {"storm": 0, "cloud": 1, "aurora": 3}
-SPEEDS = {"fast": 0, "medium": 1, "slow": 2}
+try:
+    import fcntl
+except ImportError:  # Windows: no lock, retries still help
+    fcntl = None
+
+TIMEOUT = 4.0           # seconds per attempt
+ATTEMPTS = 3            # per message
+PAUSES = (1.0, 2.0)     # wait before attempt 2 and 3
+LOCK_WAIT = 20.0        # wait this long for another kessil.py
+LOCK_WAIT_STATUS = 4.0  # status polls wait less (HA command_timeout 15 s)
+
+# effect numbers; names for 2/4/5 are from the Kessil manual, see docs/protocol.md
+EFFECTS = {"storm": 0, "cloud": 1, "rainbow": 2, "aurora": 3,
+           "moonlight-red": 4, "moonlight-blue": 5}
+FREQUENCIES = {"often": 0, "medium": 1, "rare": 2,
+               "fast": 0, "slow": 2}  # fast/slow: old names, still accepted
 MINUTE_KEYS = ("minutes", "m", "M", "min", "minute", "time", "t")
 UI_KEYS = ("UI", "ui")
+
+
+class NoAnswer(RuntimeError):
+    pass
+
+
+def lock(path, wait):
+    handle = open(path, "a+")
+    if fcntl is None:
+        return handle
+    end = time.time() + wait
+    while True:
+        try:
+            fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return handle
+        except OSError:
+            if time.time() >= end:
+                handle.close()
+                raise NoAnswer("dongle busy (another command is still running)")
+            time.sleep(0.2)
 
 
 class Dongle:
@@ -55,7 +98,7 @@ class Dongle:
         self.port = port
         self.group = group
 
-    def send(self, dtype, data):
+    def send_once(self, dtype, data):
         message = json.dumps({"data": data, "dtype": dtype}, separators=(",", ":"))
         with socket.create_connection((self.host, self.port), timeout=TIMEOUT) as s:
             s.sendall(message.encode())
@@ -73,8 +116,19 @@ class Dongle:
                 except ValueError:
                     continue  # answer not complete yet
         if not buffer:
-            raise RuntimeError("no answer from the dongle")
+            raise NoAnswer("no answer")
         return json.loads(buffer.decode("utf-8", "replace"))
+
+    def send(self, dtype, data, attempts=ATTEMPTS):
+        last = None
+        for nr in range(attempts):
+            if nr:
+                time.sleep(PAUSES[min(nr - 1, len(PAUSES) - 1)])
+            try:
+                return self.send_once(dtype, data)
+            except (OSError, ValueError, NoAnswer) as error:
+                last = error
+        raise NoAnswer("no answer after %d attempts (dtype %d): %s" % (attempts, dtype, last))
 
     # --- building blocks -------------------------------------------------
     def status(self):
@@ -93,6 +147,18 @@ class Dongle:
     def end_effect(self, group_status):
         if group_status.get("eid", -1) != -1:
             self.send(101, {"GID": self.group, "EID": -1, "FREQ": 1, "duration": 30})
+
+    def restore(self, g):
+        """Restore the state of an earlier status answer (dtype 102)."""
+        if g.get("pause", 1) == 1 and g.get("eid", -1) == -1:
+            return  # was off - keep it off
+        if g.get("pid", -1) != -1:
+            self.assign_program(g["pid"])
+            self.pause(0)
+        else:
+            ui = g.get("UI", [255, 255, 0, 100, 100])
+            self.pause(0)
+            self.values(ui[0], ui[1], ui[3], ui[4], 0)
 
     # --- the sequences the Kessil app uses --------------------------------
     def on(self):
@@ -116,10 +182,23 @@ class Dongle:
         self.pause(0)
         return self.values(ui1, ui2, ui4, ui5, 1)
 
-    def effect(self, number, speed, seconds):
+    def effect(self, number, frequency, seconds):
+        g = self.status()
         self.pause(1)
-        return self.send(101, {"GID": self.group, "EID": speed * 100 + number,
-                               "FREQ": speed, "duration": seconds})
+        try:
+            answer = self.send(101, {"GID": self.group, "EID": frequency * 100 + number,
+                                     "FREQ": frequency, "duration": seconds})
+        except NoAnswer as error:
+            try:
+                self.restore(g)
+                note = "previous state restored"
+            except NoAnswer:
+                note = "restoring failed too"
+            return {"code": -1, "msg": "effect did not arrive (%s): %s" % (note, error)}
+        if answer.get("code", 1) != 0:
+            self.restore(g)
+            answer["msg"] = "effect rejected, previous state restored"
+        return answer
 
     def effect_off(self):
         return self.on()
@@ -237,7 +316,7 @@ def build_parser():
         m.add_argument(field, type=float)
     e = sub.add_parser("effect")
     e.add_argument("name")
-    e.add_argument("--speed", choices=SPEEDS, default="medium")
+    e.add_argument("--frequency", "--speed", dest="frequency", choices=FREQUENCIES, default="medium")
     e.add_argument("--seconds", type=int, default=60)
     pr = sub.add_parser("program")
     pr.add_argument("pid", type=int)
@@ -259,7 +338,7 @@ def run(args):
     if c == "lamps":
         return d.send(5, {})
     if c == "status":
-        return d.send(102, {"GID": args.group})
+        return d.send(102, {"GID": args.group}, attempts=2)
     if c == "on":
         return d.on()
     if c == "off":
@@ -271,7 +350,7 @@ def run(args):
         number = EFFECTS.get(args.name.lower())
         if number is None:
             number = clamp(args.name, 0, 9)
-        return d.effect(number, SPEEDS[args.speed], clamp(args.seconds, 30, 300))
+        return d.effect(number, FREQUENCIES[args.frequency], clamp(args.seconds, 30, 300))
     if c == "effect-off":
         return d.effect_off()
     if c == "program":
@@ -291,8 +370,13 @@ def run(args):
 
 def main(argv=None):
     args = build_parser().parse_args(argv)
+    lock_path = os.environ.get("KESSIL_LOCK", os.path.join(tempfile.gettempdir(), "kessil.lock"))
     try:
-        answer = run(args)
+        handle = lock(lock_path, LOCK_WAIT_STATUS if args.command == "status" else LOCK_WAIT)
+        try:
+            answer = run(args)
+        finally:
+            handle.close()
     except Exception as error:  # noqa: BLE001
         answer = {"code": -1, "msg": str(error)}
     print(json.dumps(answer, separators=(",", ":")))

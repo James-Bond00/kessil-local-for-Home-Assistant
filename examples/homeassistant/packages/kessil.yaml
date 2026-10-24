@@ -10,7 +10,8 @@
 #   light.kessil                 on/off, brightness (manual mode), effects
 #   sensor.kessil_status         Off / Manual / Program / Effect (+ attributes)
 #   sliders                      INT, color, red, amber (manual mode)
-#   effect select, speed, time   storm, cloud, aurora
+#   effect select, frequency,    storm, cloud, rainbow, aurora (storm is
+#   duration                     switched back automatically, see below)
 #   script.kessil_resume_program back to the daily program
 #   daily program                shape from input_text.kessil_program_shape is
 #                                moved so that it ends at sunset + offset (or a
@@ -24,7 +25,7 @@ shell_command:
   kessil_on: "python3 /config/shell/kessil.py --host 192.168.1.50 on"
   kessil_off: "python3 /config/shell/kessil.py --host 192.168.1.50 off"
   kessil_manual: "python3 /config/shell/kessil.py --host 192.168.1.50 manual {{ ui1 | int }} {{ ui2 | int }} {{ ui4 | int }} {{ ui5 | int }}"
-  kessil_effect: "python3 /config/shell/kessil.py --host 192.168.1.50 effect {{ effect }} --speed {{ speed }} --seconds {{ seconds | int }}"
+  kessil_effect: "python3 /config/shell/kessil.py --host 192.168.1.50 effect {{ effect }} --frequency {{ frequency }} --seconds {{ seconds | int }}"
   kessil_effect_off: "python3 /config/shell/kessil.py --host 192.168.1.50 effect-off"
   kessil_program: "python3 /config/shell/kessil.py --host 192.168.1.50 program {{ pid | int }}"
   kessil_program_read: "python3 /config/shell/kessil.py --host 192.168.1.50 program-read"
@@ -106,16 +107,18 @@ input_select:
       - "None"
       - Storm
       - Cloud
+      - Rainbow
       - Aurora
     icon: mdi:weather-lightning
   kessil_effect_speed:
-    name: "Kessil effect speed"
+    # "Frequency" in the Kessil manual: how often the effect occurs in its time
+    name: "Kessil effect frequency"
     options:
-      - slow
+      - often
       - medium
-      - fast
+      - rare
     initial: medium
-    icon: mdi:speedometer
+    icon: mdi:repeat
   kessil_program_anchor:
     name: "Kessil program anchor"
     options:
@@ -177,11 +180,11 @@ template:
           {% else %}
             None
           {% endif %}
-        effect_list: "{{ ['None', 'Storm', 'Cloud', 'Aurora'] }}"
+        effect_list: "{{ ['None', 'Storm', 'Cloud', 'Rainbow', 'Aurora'] }}"
         effect: >-
           {% set e = state_attr('sensor.kessil_status', 'eid') | int(-1) %}
           {% if e == -1 %}None
-          {% else %}{{ {0: 'Storm', 1: 'Cloud', 3: 'Aurora'}.get(e % 100, 'None') }}
+          {% else %}{{ {0: 'Storm', 1: 'Cloud', 2: 'Rainbow', 3: 'Aurora'}.get(e % 100, 'None') }}
           {% endif %}
         availability: "{{ states('sensor.kessil_status') not in ['unavailable', 'unknown'] }}"
         turn_on:
@@ -325,31 +328,88 @@ script:
 
   kessil_effect:
     alias: "Kessil effect"
+    description: "Starts an effect. Cloud, Rainbow and Aurora return to the previous state by themselves; Storm stays on the lamp after its time, so this script switches back (program, manual or off) when the time is over."
     icon: mdi:weather-lightning
-    mode: queued
-    max: 5
+    mode: restart
     fields:
       effect:
-        description: "None, Storm, Cloud or Aurora"
+        description: "None, Storm, Cloud, Rainbow or Aurora"
         example: "Storm"
+      seconds:
+        description: "30-300 (empty = effect duration slider)"
+        example: 120
+      frequency:
+        description: "often, medium or rare (empty = frequency select)"
+        example: "often"
     sequence:
+      - variables:
+          known: "{{ ['Storm', 'Cloud', 'Rainbow', 'Aurora'] }}"
+          secs: >-
+            {% if seconds is defined and seconds | int(0) > 0 %}{{ [[seconds | int, 30] | max, 300] | min }}
+            {% else %}{{ [[(states('input_number.kessil_effect_minutes') | float(1) * 60) | int, 30] | max, 300] | min }}{% endif %}
+          freq: >-
+            {% set f = frequency if frequency is defined and frequency in ['often', 'medium', 'rare'] else states('input_select.kessil_effect_speed') %}
+            {{ f if f in ['often', 'medium', 'rare'] else 'medium' }}
+          before_pid: "{{ state_attr('sensor.kessil_status', 'pid') | int(1) }}"
+          before_pause: "{{ state_attr('sensor.kessil_status', 'pause') | int(0) }}"
+          before_eid: "{{ state_attr('sensor.kessil_status', 'eid') | int(-1) }}"
       - if:
           - condition: template
-            value_template: "{{ effect not in ['Storm', 'Cloud', 'Aurora'] }}"
+            value_template: "{{ effect not in known }}"
         then:
           - action: shell_command.kessil_effect_off
             response_variable: answer
-        else:
-          - action: shell_command.kessil_effect
-            data:
-              effect: "{{ effect | lower }}"
-              speed: "{{ states('input_select.kessil_effect_speed') if states('input_select.kessil_effect_speed') in ['slow', 'medium', 'fast'] else 'medium' }}"
-              seconds: "{{ (states('input_number.kessil_effect_minutes') | float(1) * 60) | int }}"
-            response_variable: answer
+          - delay: "00:00:01"
+          - action: homeassistant.update_entity
+            target:
+              entity_id: sensor.kessil_status
+          - stop: "effect ended"
+      - action: shell_command.kessil_effect
+        data:
+          effect: "{{ effect | lower }}"
+          frequency: "{{ freq }}"
+          seconds: "{{ secs }}"
+        response_variable: answer
       - delay: "00:00:01"
       - action: homeassistant.update_entity
         target:
           entity_id: sensor.kessil_status
+      # wait for the end (mode restart: a new effect cancels the wait)
+      - delay:
+          seconds: "{{ secs | int + 5 }}"
+      - action: homeassistant.update_entity
+        target:
+          entity_id: sensor.kessil_status
+      - delay: "00:00:02"
+      - if:
+          - condition: template
+            value_template: >-
+              {{ effect == 'Storm'
+                 and state_attr('sensor.kessil_status', 'eid') | int(-1) != -1
+                 and state_attr('sensor.kessil_status', 'eid') | int(-1) % 100 == 0 }}
+        then:
+          - choose:
+              - conditions:
+                  - condition: template
+                    value_template: "{{ before_eid == -1 and before_pause == 0 and before_pid != -1 }}"
+                sequence:
+                  - action: shell_command.kessil_program
+                    data:
+                      pid: "{{ before_pid }}"
+                    response_variable: back
+              - conditions:
+                  - condition: template
+                    value_template: "{{ before_eid == -1 and before_pause == 1 }}"
+                sequence:
+                  - action: shell_command.kessil_off
+                    response_variable: back
+            default:
+              - action: shell_command.kessil_effect_off
+                response_variable: back
+          - delay: "00:00:01"
+          - action: homeassistant.update_entity
+            target:
+              entity_id: sensor.kessil_status
 
   kessil_resume_program:
     alias: "Kessil resume program"
@@ -448,7 +508,7 @@ automation:
       - action: script.kessil_set
 
   - id: kessil_effect_settings
-    alias: "Kessil – apply effect speed/duration"
+    alias: "Kessil – apply effect frequency/duration"
     mode: restart
     triggers:
       - trigger: state

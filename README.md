@@ -34,7 +34,7 @@ python3 kessil.py status
 python3 kessil.py off
 python3 kessil.py on
 python3 kessil.py manual 200 128 0 40          # INT CLR RED AMBER
-python3 kessil.py effect storm --speed slow --seconds 120
+python3 kessil.py effect storm --frequency often --seconds 120
 python3 kessil.py effect-off
 python3 kessil.py program 1                    # back to the daily program
 python3 kessil.py program-read
@@ -42,6 +42,24 @@ python3 kessil.py program-write "420:2,0,0,65;480:51,25,0,16;600:255,229,0,0;780
 ```
 
 Every command prints one line of JSON and exits with 0 on success.
+
+The dongle accepts only **one connection at a time**. `kessil.py` takes a lock
+file so parallel calls wait for each other, retries if there is no answer, and
+puts the lamp back into its previous state if an effect command gets lost.
+
+### Effects on a Tuna Sun (tested)
+
+| name | number | what you see | after its time |
+|---|---|---|---|
+| storm | 0 | dimmed, short bright flashes | **stays** in the effect – switch back yourself |
+| cloud | 1 | brightness goes up and down | returns by itself |
+| rainbow | 2 | red → orange → almost off → orange → red (no blue/green on a Tuna Sun) | returns by itself |
+| aurora | 3 | slow pulsing, darker and brighter | returns by itself |
+| moonlight-red / -blue | 4 / 5 | nothing visible on a Tuna Sun | returns by itself |
+
+The effects work on the white channels – during a red/amber sunset you hardly
+see them. Names for 2, 4 and 5 are taken from the Kessil manual.
+
 `program-write` writes the complete program, activates it, reads it back and
 reports `"verified": true` if the lamp has exactly what was sent.
 
@@ -57,9 +75,9 @@ See [examples/homeassistant/README.md](examples/homeassistant/README.md).
 In short: copy `shell/kessil.py` and `packages/kessil.yaml`, set your dongle IP,
 restart. You get:
 
-- `light.kessil` – on/off, brightness, effects (storm, cloud, aurora)
+- `light.kessil` – on/off, brightness, effects (storm, cloud, rainbow, aurora)
 - `sensor.kessil_status` – Off / Manual / Program / Effect
-- sliders for INT, color, red, amber; effect speed and duration
+- sliders for INT, color, red, amber; effect frequency and duration
 - `script.kessil_resume_program`
 - a daily program that keeps its shape and ends at **sunset + offset** (or a fixed
   time / sunrise), written to the lamp every Sunday and with a button. The lamp

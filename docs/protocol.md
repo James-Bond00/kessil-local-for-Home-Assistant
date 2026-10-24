@@ -56,9 +56,25 @@ Red and amber are separate channels and also light up at INT 0.
 ## Effects (dtype 101)
 
 - `EID = FREQ * 100 + effect`, `EID -1` = effect off
-- effect: `0` storm, `1` cloud, `3` aurora (`2` *untested*)
-- `FREQ`: `0` fast, `1` medium, `2` slow
+- `FREQ`: 0, 1, 2. The Kessil manual calls it *Frequency – how often the effect
+  occurs during the time period*. `0` gave the most visible storm in tests
+  (often), `2` = rare.
 - `duration`: seconds, 30–300 (the app shows minutes)
+- The manual lists six effects: Storm, Cloud, Aurora, Rainbow, Moonlight Red,
+  Moonlight Blue. Tested on two A360X **Tuna Sun** (white light as base, FREQ 0, 60 s):
+
+| effect | what you see | after `duration` |
+|---|---|---|
+| 0 storm | dimmed with short bright flashes | **stays in the effect** (status keeps `eid`, lamp stays dimmed) – send "run program" or "effect off" |
+| 1 cloud | brightness goes up and down | returns to the state before by itself |
+| 2 rainbow *(name from the manual)* | red → orange → almost off → orange → red | returns by itself |
+| 3 aurora | slow pulsing | returns by itself |
+| 4 moonlight red *(name from the manual)* | nothing visible | returns by itself |
+| 5 moonlight blue *(name from the manual)* | nothing visible | returns by itself |
+
+The effects modulate the white channels. In a red/amber phase of the program
+you hardly see anything. Moonlight is probably meant for lamps with other
+channels (e.g. Tuna Blue).
 
 ## Sequences – do it like the app
 
@@ -118,10 +134,41 @@ Request `{"PID":1,"type":2}`. Answer (shortened):
 - After writing, the app activates it with `113 pause 0` + `100 PID 1`.
 - Read it back with dtype 106 and compare to be sure.
 
+## Effects inside the daily program
+
+In the app every program point has an *Effect* tab (Storm, Cloud, Aurora,
+Rainbow, time, frequency). That is what `EID`, `d` and `f` in each point of
+dtype 107 are for (`eid`, `duration`, `freq` when reading). With these the lamp
+runs effects at given times on its own. *Not tested yet.*
+
+## Acclimation and lunar cycle
+
+The full group status (also returned after dtype 113) contains:
+
+```json
+"accl":  {"start":20,"period":14,"enabled":0,"startDate":0,"stopDate":0},
+"lunar": {"start":1200,"end":480,"high":120,"color":0,"phase":0,"enabled":0,"startDate":0,"stopDate":0}
+```
+
+- **Acclimation** (manual): lowers the program for new corals or a new lamp.
+  `start` = starting intensity in % of the program, `period` = days until 100 %.
+- **Lunar cycle** (manual): 30-day moon phases with "ultra low dimming" at night;
+  `start`/`end` = minutes after midnight (here 20:00–08:00), moon colour blue or
+  red, starting phase, or *static*.
+- How to switch them on was not captured yet.
+
 ## Pitfalls
+
+- **One connection at a time.** If a second client connects while a command is
+  running (e.g. a status poll), one of them gets no answer. Serialise your calls
+  and retry. Lost effect commands are nasty: the lamp is already paused and
+  stays dark – restore the previous state if `101` gets no answer.
+- No hard limit on program points was found (10 written and verified; the app
+  also accepted extra points).
 
 - The Kessil app saves automatically when you go back, and editing sometimes adds
   new points (changing a value at 10:00 created an extra point at 10:05). If a script
-  manages the program, don't edit it in the app afterwards.
+  manages the program, don't edit it in the app afterwards – even opening the
+  program in the app and going back can write the app's copy over yours. Close the app.
 - A lost "off" point means the light stays on with the last values – always include it.
 - Give the dongle a fixed IP in your router.

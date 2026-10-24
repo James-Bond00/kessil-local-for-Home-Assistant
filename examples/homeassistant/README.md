@@ -20,10 +20,10 @@ Uses only built-in integrations (`shell_command`, `command_line`, `template`).
 
 | entity | what it does |
 |---|---|
-| `light.kessil` | on/off (like the app), brightness = manual mode, effects None/Storm/Cloud/Aurora |
+| `light.kessil` | on/off (like the app), brightness = manual mode, effects None/Storm/Cloud/Rainbow/Aurora (Storm is switched back after its time) |
 | `sensor.kessil_status` | Off / Manual / Program / Effect, attributes `pid`, `eid`, `pause`, `UI`, `name`, `hasLamps` |
 | `input_number.kessil_intensity`, `_color`, `_red`, `_amber` | sliders for manual mode (applied while the light is on) |
-| `input_select.kessil_effect`, `_effect_speed`, `input_number.kessil_effect_minutes` | effects |
+| `input_select.kessil_effect`, `_effect_speed` (frequency: often/medium/rare), `input_number.kessil_effect_minutes` | effects |
 | `script.kessil_resume_program` | back to the daily program |
 | `sensor.kessil_program_plan` | the planned daily program (state "start–end", attribute `points`) |
 | `script.kessil_write_program` | writes the plan to the lamp and verifies it |
