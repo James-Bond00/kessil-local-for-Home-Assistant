@@ -20,7 +20,7 @@ Uses only built-in integrations (`shell_command`, `command_line`, `template`).
 
 | entity | what it does |
 |---|---|
-| `light.kessil` | on/off (like the app), brightness = manual mode, effects None/Storm/Cloud/Rainbow/Aurora (Storm is switched back after its time) |
+| `light.kessil` | on/off (like the app), brightness = manual mode, effects None/Storm/Cloud/Rainbow/Aurora (switched back after its time if the lamp stays in the effect – Storm always, Cloud when started from the program; plus a 10-min watchdog) |
 | `sensor.kessil_status` | Off / Manual / Program / Effect, attributes `pid`, `eid`, `pause`, `UI`, `name`, `hasLamps` |
 | `input_number.kessil_intensity`, `_color`, `_red`, `_amber` | sliders for manual mode (applied while the light is on) |
 | `input_select.kessil_effect`, `_effect_speed` (frequency: often/medium/rare), `input_number.kessil_effect_minutes` | effects |

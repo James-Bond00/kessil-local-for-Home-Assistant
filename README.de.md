@@ -36,4 +36,16 @@ python3 kessil.py program-read
 
 Home Assistant: siehe [examples/homeassistant/README.md](examples/homeassistant/README.md).
 
+## Gut zu wissen
+
+- **Effekte:** Gewitter bleibt nach Ablauf immer auf der Lampe stehen, Wolken
+  auch dann, wenn es aus dem laufenden Tagesprogramm gestartet wurde. Nach
+  Ablauf den Status lesen und bei `eid` ≠ −1 selbst zurückschalten – das
+  Home-Assistant-Beispiel macht das für jeden Effekt und hat einen Wächter
+  für Effekte, die länger als 10 min hängen.
+- **Verbrauch** (zwei A360X Tuna Sun, am Hauszähler gemessen): 30 % ~36 W,
+  50 % ~57 W, 70 % ~88 W, 100 % ~140 W. Faustformel
+  P ≈ 140 W × (INT/255)^1,2 × Farbfaktor (CLR 0 % 0,70 · 80 % 1,00 · 100 % 0,89).
+  Details in `docs/protocol.md`.
+
 Lizenz: MIT.

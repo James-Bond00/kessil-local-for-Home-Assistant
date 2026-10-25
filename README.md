@@ -52,10 +52,15 @@ puts the lamp back into its previous state if an effect command gets lost.
 | name | number | what you see | after its time |
 |---|---|---|---|
 | storm | 0 | dimmed, short bright flashes | **stays** in the effect – switch back yourself |
-| cloud | 1 | brightness goes up and down | returns by itself |
-| rainbow | 2 | red → orange → almost off → orange → red (no blue/green on a Tuna Sun) | returns by itself |
-| aurora | 3 | slow pulsing, darker and brighter | returns by itself |
-| moonlight-red / -blue | 4 / 5 | nothing visible on a Tuna Sun | returns by itself |
+| cloud | 1 | brightness goes up and down | from manual mode: returns by itself · **started while the program runs: stays** (like storm) |
+| rainbow | 2 | red → orange → almost off → orange → red (no blue/green on a Tuna Sun) | returns by itself (tested from manual mode) |
+| aurora | 3 | slow pulsing, darker and brighter | returns by itself (tested from manual mode) |
+| moonlight-red / -blue | 4 / 5 | nothing visible on a Tuna Sun | returns by itself (tested from manual mode) |
+
+**Safe rule:** after `--seconds` + a few seconds, read `status`. If it still
+reports an effect (`eid` ≠ −1), put the lamp back yourself (`program 1`,
+`manual …` or `off`, whatever it was before). The Home Assistant example does
+this for every effect and has a watchdog for effects that hang longer than 10 min.
 
 The effects work on the white channels – during a red/amber sunset you hardly
 see them. Names for 2, 4 and 5 are taken from the Kessil manual.
@@ -68,6 +73,21 @@ the last point is the "off" point. INT/CLR 0–255, RED/AMBER 0–100.
 
 Options / environment: `--host` `KESSIL_HOST`, `--port` `KESSIL_PORT` (8888),
 `--group` `KESSIL_GROUP` (2), `--pid` `KESSIL_PID` (1), `--type` `KESSIL_TYPE` (2).
+
+## Power draw (measured)
+
+Two A360X Tuna Sun on one dongle, measured as steps on the house meter
+(same phase, 75 s per step, median). Details in [docs/protocol.md](docs/protocol.md#power-draw).
+
+| setting (INT, CLR 80 %) | both lamps |
+|---|---|
+| 30 % | ~36 W |
+| 50 % | ~57 W |
+| 70 % | ~88 W |
+| 100 % | ~140 W |
+
+Rule of thumb: **P ≈ 140 W × (INT/255)^1.2 × colour factor**
+(CLR 0 % → 0.70, 80 % → 1.00, 100 % → 0.89). Red/amber not measured yet.
 
 ## Home Assistant
 

@@ -66,11 +66,15 @@ Red and amber are separate channels and also light up at INT 0.
 | effect | what you see | after `duration` |
 |---|---|---|
 | 0 storm | dimmed with short bright flashes | **stays in the effect** (status keeps `eid`, lamp stays dimmed) – send "run program" or "effect off" |
-| 1 cloud | brightness goes up and down | returns to the state before by itself |
-| 2 rainbow *(name from the manual)* | red → orange → almost off → orange → red | returns by itself |
-| 3 aurora | slow pulsing | returns by itself |
-| 4 moonlight red *(name from the manual)* | nothing visible | returns by itself |
-| 5 moonlight blue *(name from the manual)* | nothing visible | returns by itself |
+| 1 cloud | brightness goes up and down | started from **manual** mode: returns to the state before by itself. Started while the **program** runs (`pid 1`, `pause 0`): **stays in the effect** like storm (seen for 85 min: `eid 101`, `pause 1`, `pid 1`) – send "run program" |
+| 2 rainbow *(name from the manual)* | red → orange → almost off → orange → red | returns by itself (tested from manual mode only) |
+| 3 aurora | slow pulsing | returns by itself (tested from manual mode only) |
+| 4 moonlight red *(name from the manual)* | nothing visible | returns by itself (tested from manual mode only) |
+| 5 moonlight blue *(name from the manual)* | nothing visible | returns by itself (tested from manual mode only) |
+
+Don't rely on "returns by itself". After `duration` read the status; if `eid`
+is still not −1, restore the previous state yourself (program → `113 pause 0`
++ `100 PID`, manual → effect off, off → off).
 
 The effects modulate the white channels. In a red/amber phase of the program
 you hardly see anything. Moonlight is probably meant for lamps with other
@@ -140,6 +144,29 @@ In the app every program point has an *Effect* tab (Storm, Cloud, Aurora,
 Rainbow, time, frequency). That is what `EID`, `d` and `f` in each point of
 dtype 107 are for (`eid`, `duration`, `freq` when reading). With these the lamp
 runs effects at given times on its own. *Not tested yet.*
+
+## Power draw
+
+Measured with two A360X Tuna Sun on one dongle, both on the same phase of the
+house meter. Each step held 75 s, the first 20 s after switching ignored, median
+of the 5-second readings, PV and other known loads subtracted. Baseline (lamps
+off) was taken between the steps.
+
+| INT | CLR | both lamps |
+|---|---|---|
+| 0 (off) | – | 0 (baseline) |
+| 77 (30 %) | 204 | +36 W |
+| 128 (50 %) | 204 | +57 W |
+| 179 (70 %) | 204 | +88 W |
+| 255 (100 %) | 204 | +133 … +145 W (4 runs, ~140 W) |
+| 255 | 0 | +97 W |
+| 255 | 255 | +124 W |
+
+- Fits **P ≈ 140 W × (INT/255)^1.2 × f(CLR)** with f = 0.70 at CLR 0 %, 1.00 at
+  80 %, 0.89 at 100 % (linear in between). The colour mix around 80 % drives both
+  white channels hardest.
+- Kessil states up to 90 W per lamp; with white light the two lamps stayed well below 180 W.
+- Red/amber channels and standby were not measured.
 
 ## Acclimation and lunar cycle
 

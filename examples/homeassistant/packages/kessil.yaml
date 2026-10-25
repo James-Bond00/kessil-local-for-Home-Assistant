@@ -10,8 +10,9 @@
 #   light.kessil                 on/off, brightness (manual mode), effects
 #   sensor.kessil_status         Off / Manual / Program / Effect (+ attributes)
 #   sliders                      INT, color, red, amber (manual mode)
-#   effect select, frequency,    storm, cloud, rainbow, aurora (storm is
-#   duration                     switched back automatically, see below)
+#   effect select, frequency,    storm, cloud, rainbow, aurora (switched back
+#   duration                     automatically if the lamp stays in the effect)
+#   effect watchdog              back to the program if an effect hangs > 10 min
 #   script.kessil_resume_program back to the daily program
 #   daily program                shape from input_text.kessil_program_shape is
 #                                moved so that it ends at sunset + offset (or a
@@ -328,7 +329,7 @@ script:
 
   kessil_effect:
     alias: "Kessil effect"
-    description: "Starts an effect. Cloud, Rainbow and Aurora return to the previous state by themselves; Storm stays on the lamp after its time, so this script switches back (program, manual or off) when the time is over."
+    description: "Starts an effect. When the time is over and the lamp still reports an effect, this script switches back to the state before (program, manual or off). Storm always stays on the lamp, and Cloud stays too when it was started while the daily program was running."
     icon: mdi:weather-lightning
     mode: restart
     fields:
@@ -377,16 +378,22 @@ script:
       # wait for the end (mode restart: a new effect cancels the wait)
       - delay:
           seconds: "{{ secs | int + 5 }}"
-      - action: homeassistant.update_entity
-        target:
-          entity_id: sensor.kessil_status
-      - delay: "00:00:02"
+      # read the status (up to 3 times if the poll returns "unknown")
+      - repeat:
+          sequence:
+            - action: homeassistant.update_entity
+              target:
+                entity_id: sensor.kessil_status
+            - delay: "00:00:03"
+          until:
+            - condition: template
+              value_template: "{{ states('sensor.kessil_status') not in ['unknown', 'unavailable'] or repeat.index >= 3 }}"
+      # still in an effect (Storm always, Cloud when started from the program)
+      # → restore the state before
       - if:
           - condition: template
             value_template: >-
-              {{ effect == 'Storm'
-                 and state_attr('sensor.kessil_status', 'eid') | int(-1) != -1
-                 and state_attr('sensor.kessil_status', 'eid') | int(-1) % 100 == 0 }}
+              {{ state_attr('sensor.kessil_status', 'eid') | int(-1) != -1 }}
         then:
           - choose:
               - conditions:
@@ -486,6 +493,34 @@ script:
           entity_id: sensor.kessil_status
 
 automation:
+  # Safety net: effects last 5 min at most. If the lamp reports "Effect" for
+  # 10 min it is stuck (e.g. HA restarted while the script was waiting).
+  - id: kessil_effect_watchdog
+    alias: "Kessil – effect watchdog"
+    mode: single
+    max_exceeded: silent
+    triggers:
+      - trigger: state
+        entity_id: sensor.kessil_status
+        to: "Effect"
+        for: "00:10:00"
+    actions:
+      - if:
+          - condition: template
+            value_template: "{{ state_attr('sensor.kessil_status', 'pid') | int(-1) != -1 }}"
+        then:
+          - action: shell_command.kessil_program
+            data:
+              pid: "{{ state_attr('sensor.kessil_status', 'pid') | int(1) }}"
+            response_variable: answer
+        else:
+          - action: shell_command.kessil_effect_off
+            response_variable: answer
+      - delay: "00:00:02"
+      - action: homeassistant.update_entity
+        target:
+          entity_id: sensor.kessil_status
+
   - id: kessil_sliders
     alias: "Kessil – apply sliders"
     mode: restart
